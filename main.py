@@ -1,8 +1,11 @@
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 import logging
+import sqlite3
+from datetime import datetime
 
 # ---- CONFIG ----
+DB_NAME = "quotations.db"
 COMISION_PORCENTAJE = 0.15   # Comisión 15%
 ENVIO_USD_POR_KG = 40.0      # Envío por kilo
 DOLAR_BLUE = 1300
@@ -56,6 +59,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             respuesta = calcular_cotizacion_mendocina(
                 estado["nombre"], estado["link"], estado["peso"], estado["precio"]
             )
+            
+            # ---- SAVE QUOTATION ----
+            current_date_str_db = datetime.now().strftime("%Y-%m-%d %H:%M:%S") # Date for DB
+            save_quotation_to_db(
+                user_id,
+                update.effective_user.username,
+                estado["nombre"],
+                estado["link"],
+                estado["peso"],
+                estado["precio"],
+                current_date_str_db,
+                respuesta
+            )
+            # ---- END SAVE QUOTATION ----
+            
             await update.message.reply_text(respuesta)  # <-- no usamos Markdown para evitar errores
             del usuarios[user_id]
         except ValueError:
@@ -71,25 +89,64 @@ def calcular_cotizacion_mendocina(nombre, link, peso, precio_usd):
     total_usd = precio_usd + comision + envio
     total_ars_mep = total_usd * DOLAR_MEP
     total_ars_blue = total_usd * DOLAR_BLUE
+    current_date_str = datetime.now().strftime("%d/%m/%Y") # Date for the message
 
     return f"""
-🛒 {nombre}
-🔗 {link}
+🗓️ Fecha: {current_date_str}
 
-📦 Peso: {peso} kg
-💵 Precio base: USD {precio_usd:.2f}
-🔧 Comisión (15%): USD {comision:.2f}
-🚚 Envío estimado: USD {envio:.2f}
+🛒 Producto: {nombre}
+🔗 Link: {link}
 
-🔥 Total final: USD {total_usd:.2f}
-💸 En pesos MEP: ${total_ars_mep:,.0f}
-💸 En pesos Blue: ${total_ars_blue:,.0f}
+⚖️ Peso: {peso} kg
+💲 Precio Base: USD {precio_usd:.2f}
+✨ Comisión (15%): USD {comision:.2f}
+✈️ Envío Estimado: USD {envio:.2f}
+
+🔥 Total Final USD: {total_usd:.2f}
+
+💸 En Pesos (MEP aprox.): ${total_ars_mep:,.0f}
+💸 En Pesos (BLUE aprox.): ${total_ars_blue:,.0f}
 
 _Alta ganga, bro. Esta cotización está mansa como vino de finca, culiao._
 """
 
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS quotations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_telegram_id INTEGER NOT NULL,
+            client_username TEXT,
+            product_name TEXT NOT NULL,
+            product_link TEXT,
+            weight_kg REAL,
+            price_usd REAL,
+            quotation_date TEXT NOT NULL,
+            full_quotation_text TEXT NOT NULL
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def save_quotation_to_db(client_telegram_id, client_username, product_name, product_link, weight_kg, price_usd, quotation_date, full_quotation_text):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            INSERT INTO quotations (client_telegram_id, client_username, product_name, product_link, weight_kg, price_usd, quotation_date, full_quotation_text)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (client_telegram_id, client_username, product_name, product_link, weight_kg, price_usd, quotation_date, full_quotation_text))
+        conn.commit()
+        logging.info(f"Quotation saved for user {client_telegram_id}")
+    except sqlite3.Error as e:
+        logging.error(f"Error saving quotation for user {client_telegram_id}: {e}")
+    finally:
+        conn.close()
+
 # ---- MAIN ----
 if __name__ == '__main__':
+    init_db()
     TOKEN = '7980979040:AAEFgs12B1waa76HO28A-In5mbNbxLWBp4c'  # <-- pegá el token de BotFather
     app = ApplicationBuilder().token(TOKEN).build()
 
